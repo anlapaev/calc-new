@@ -1591,6 +1591,51 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     };
   }
 
+  // На iOS инлайним <img src> → data:...
+  async function inlineImages(root) {
+    if (!IS_IOS) return { changed: [], restore(){} };
+
+    const changed = [];
+    const imgs = root.querySelectorAll("img");
+    const cache = new Map();
+
+    async function toDataUrl(url) {
+      if (cache.has(url)) return cache.get(url);
+      const resp = await fetch(url, { mode: "cors" });
+      const blob = await resp.blob();
+      const dataUrl = await new Promise(r => {
+        const fr = new FileReader();
+        fr.onloadend = () => r(fr.result);
+        fr.readAsDataURL(blob);
+      });
+      cache.set(url, dataUrl);
+      return dataUrl;
+    }
+
+    const tasks = Array.from(imgs).map(async img => {
+      const src = img.getAttribute("src");
+      if (!src || src.startsWith("data:")) return;
+      try {
+        const data = await toDataUrl(src);
+        img.setAttribute("src", data);
+        changed.push({ img, src });
+      } catch (e) {
+        // пропускаем, если не удалось
+      }
+    });
+
+    await Promise.all(tasks);
+
+    return {
+      changed,
+      restore() {
+        for (const { img, src } of changed) {
+          img.setAttribute("src", src);
+        }
+      }
+    };
+  }
+
   async function ensureFontsAndImagesReady(root) {
     await ensureFontsReady();
     // для не-iOS просто прелоадим внешние фоновые картинки
@@ -1635,8 +1680,9 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   }
 
   async function captureElement(el) {
-    // 1) инлайн фоны на iOS
-    const inlined = await inlineBackgrounds(el);
+    // 1) инлайн ресурсы на iOS
+    const inlinedBg = await inlineBackgrounds(el);
+    const inlinedImg = await inlineImages(el);
     try {
       // 2) дождаться шрифтов/картинок
       await ensureFontsAndImagesReady(el);
@@ -1655,8 +1701,9 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
       // 4) blob + двойной fallback
       return await canvasToBlobSafe(canvas, "image/png", 0.9);
     } finally {
-      // 5) вернуть исходные background-image
-      inlined.restore?.();
+      // 5) вернуть исходные ресурсы
+      inlinedBg.restore?.();
+      inlinedImg.restore?.();
     }
   }
 
