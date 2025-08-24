@@ -1482,9 +1482,7 @@
         </div>
         <script>
         
-            const GAS_URL = "https://script.google.com/macros/s/AKfycbylXNq9oJrGn4NQC4hc7S2YJmVo9fPv6IQrPzCi0u2GzOn88vj3nHbi_JaFh-sApsCD/exec";
-const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
-                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const GAS_URL = "https://script.google.com/macros/s/AKfycbylXNq9oJrGn4NQC4hc7S2YJmVo9fPv6IQrPzCi0u2GzOn88vj3nHbi_JaFh-sApsCD/exec";
 
   function nowStamp() {
     const d = new Date();
@@ -1524,9 +1522,8 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     return [...urls];
   }
 
-  // На iOS переводим background-image:url(...) → data:... (чтобы точно не таинтилось)
+  // Переводим background-image:url(...) → data:..., чтобы canvas не таинтился
   async function inlineBackgrounds(root) {
-    if (!IS_IOS) return { changed: [], restore(){} };
 
     const changed = [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
@@ -1591,9 +1588,8 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     };
   }
 
-  // На iOS инлайним <img src> → data:...
+  // Инлайним <img src> → data:..., чтобы избежать CORS-проблем
   async function inlineImages(root) {
-    if (!IS_IOS) return { changed: [], restore(){} };
 
     const changed = [];
     const imgs = root.querySelectorAll("img");
@@ -1638,11 +1634,8 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
 
   async function ensureFontsAndImagesReady(root) {
     await ensureFontsReady();
-    // для не-iOS просто прелоадим внешние фоновые картинки
-    if (!IS_IOS) {
-      const urls = collectBgUrls(root);
-      if (urls.length) await preloadImgs(urls);
-    }
+    const urls = collectBgUrls(root);
+    if (urls.length) await preloadImgs(urls);
   }
 
   // ---------- безопасное получение blob ----------
@@ -1680,7 +1673,7 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   }
 
   async function captureElement(el) {
-    // 1) инлайн ресурсы на iOS
+    // 1) инлайн внешние ресурсы
     const inlinedBg = await inlineBackgrounds(el);
     const inlinedImg = await inlineImages(el);
     try {
@@ -1689,7 +1682,7 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
 
       // 3) сам захват
       const canvas = await html2canvas(el, {
-        scale: IS_IOS ? 1 : Math.min(window.devicePixelRatio || 1, 2),
+        scale: Math.min(window.devicePixelRatio || 1, 2),
         useCORS: true,
         allowTaint: false,
         backgroundColor: null,
@@ -1793,7 +1786,6 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
               textSpan.textContent = loadText + ".".repeat(dots);
             }, 500);
 
-            const delay = IS_IOS ? 300 : 50;
             setTimeout(() => {
               makeScreenshotAndSend(function(fileUrl) {
                 clearInterval(intervalId);
@@ -1806,7 +1798,7 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
                   submitButton.style.pointerEvents = "none";
                 }
               });
-            }, delay);
+            }, 100);
           }
         }
       });
