@@ -1601,30 +1601,31 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   }
 
   // ---------- безопасное получение blob ----------
-  function canvasToBlobSafe(canvas, mime="image/png", quality=0.92) {
+  function dataURLToBlob(dataURL, mime) {
+    const bstr = atob(dataURL.split(',')[1]);
+    const len = bstr.length;
+    const u8 = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      u8[i] = bstr.charCodeAt(i);
+    }
+    return new Blob([u8], { type: mime });
+  }
+
+  function canvasToBlobSafe(canvas, mime = "image/png", quality = 0.92) {
     return new Promise((resolve, reject) => {
       if (!canvas.toBlob) {
         try {
-          const dataURL = canvas.toDataURL(mime, quality);
-          const bstr = atob(dataURL.split(',')[1]);
-          const len = bstr.length;
-          const u8 = new Uint8Array(len);
-          for (let i = 0; i < len; i++) u8[i] = bstr.charCodeAt(i);
-          return resolve(new Blob([u8], { type: mime }));
+          return resolve(dataURLToBlob(canvas.toDataURL(mime, quality), mime));
         } catch (e) {
           return reject(e);
         }
       }
       canvas.toBlob(b => {
-        if (b) resolve(b);
-        else {
+        if (b) {
+          resolve(b);
+        } else {
           try {
-            const dataURL = canvas.toDataURL(mime, quality);
-            const bstr = atob(dataURL.split(',')[1]);
-            const len = bstr.length;
-            const u8 = new Uint8Array(len);
-            for (let i = 0; i < len; i++) u8[i] = bstr.charCodeAt(i);
-            resolve(new Blob([u8], { type: mime }));
+            resolve(dataURLToBlob(canvas.toDataURL(mime, quality), mime));
           } catch (e) {
             reject(new Error("toBlob/toDataURL failed"));
           }
