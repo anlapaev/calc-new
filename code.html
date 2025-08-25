@@ -1482,9 +1482,7 @@
         </div>
         <script>
         
-            const GAS_URL = "https://script.google.com/macros/s/AKfycbylXNq9oJrGn4NQC4hc7S2YJmVo9fPv6IQrPzCi0u2GzOn88vj3nHbi_JaFh-sApsCD/exec";
-const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
-                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const GAS_URL = "https://script.google.com/macros/s/AKfycbylXNq9oJrGn4NQC4hc7S2YJmVo9fPv6IQrPzCi0u2GzOn88vj3nHbi_JaFh-sApsCD/exec";
 
   function nowStamp() {
     const d = new Date();
@@ -1524,9 +1522,8 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     return [...urls];
   }
 
-  // На iOS переводим background-image:url(...) → data:... (чтобы точно не таинтилось)
+  // Переводим background-image:url(...) → data:..., чтобы canvas не таинтился
   async function inlineBackgrounds(root) {
-    if (!IS_IOS) return { changed: [], restore(){} };
 
     const changed = [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
@@ -1591,40 +1588,82 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
     };
   }
 
+  // Инлайним <img src> → data:..., чтобы избежать CORS-проблем
+  async function inlineImages(root) {
+
+    const changed = [];
+    const imgs = root.querySelectorAll("img");
+    const cache = new Map();
+
+    async function toDataUrl(url) {
+      if (cache.has(url)) return cache.get(url);
+      const resp = await fetch(url, { mode: "cors" });
+      const blob = await resp.blob();
+      const dataUrl = await new Promise(r => {
+        const fr = new FileReader();
+        fr.onloadend = () => r(fr.result);
+        fr.readAsDataURL(blob);
+      });
+      cache.set(url, dataUrl);
+      return dataUrl;
+    }
+
+    const tasks = Array.from(imgs).map(async img => {
+      const src = img.getAttribute("src");
+      if (!src || src.startsWith("data:")) return;
+      try {
+        const data = await toDataUrl(src);
+        img.setAttribute("src", data);
+        changed.push({ img, src });
+      } catch (e) {
+        // пропускаем, если не удалось
+      }
+    });
+
+    await Promise.all(tasks);
+
+    return {
+      changed,
+      restore() {
+        for (const { img, src } of changed) {
+          img.setAttribute("src", src);
+        }
+      }
+    };
+  }
+
   async function ensureFontsAndImagesReady(root) {
     await ensureFontsReady();
-    // для не-iOS просто прелоадим внешние фоновые картинки
-    if (!IS_IOS) {
-      const urls = collectBgUrls(root);
-      if (urls.length) await preloadImgs(urls);
-    }
+    const urls = collectBgUrls(root);
+    if (urls.length) await preloadImgs(urls);
   }
 
   // ---------- безопасное получение blob ----------
-  function canvasToBlobSafe(canvas, mime="image/png", quality=0.92) {
+  function dataURLToBlob(dataURL, mime) {
+    const bstr = atob(dataURL.split(',')[1]);
+    const len = bstr.length;
+    const u8 = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      u8[i] = bstr.charCodeAt(i);
+    }
+    return new Blob([u8], { type: mime });
+  }
+
+  function canvasToBlobSafe(canvas, mime = "image/png", quality = 0.92) {
     return new Promise((resolve, reject) => {
       if (!canvas.toBlob) {
         try {
-          const dataURL = canvas.toDataURL(mime, quality);
-          const bstr = atob(dataURL.split(',')[1]);
-          const len = bstr.length;
-          const u8 = new Uint8Array(len);
-          for (let i = 0; i < len; i++) u8[i] = bstr.charCodeAt(i);
-          return resolve(new Blob([u8], { type: mime }));
+          return resolve(dataURLToBlob(canvas.toDataURL(mime, quality), mime));
         } catch (e) {
           return reject(e);
         }
       }
       canvas.toBlob(b => {
-        if (b) resolve(b);
-        else {
+        if (b) {
+          resolve(b);
+        } else {
           try {
-            const dataURL = canvas.toDataURL(mime, quality);
-            const bstr = atob(dataURL.split(',')[1]);
-            const len = bstr.length;
-            const u8 = new Uint8Array(len);
-            for (let i = 0; i < len; i++) u8[i] = bstr.charCodeAt(i);
-            resolve(new Blob([u8], { type: mime }));
+            resolve(dataURLToBlob(canvas.toDataURL(mime, quality), mime));
           } catch (e) {
             reject(new Error("toBlob/toDataURL failed"));
           }
@@ -1634,15 +1673,16 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
   }
 
   async function captureElement(el) {
-    // 1) инлайн фоны на iOS
-    const inlined = await inlineBackgrounds(el);
+    // 1) инлайн внешние ресурсы
+    const inlinedBg = await inlineBackgrounds(el);
+    const inlinedImg = await inlineImages(el);
     try {
       // 2) дождаться шрифтов/картинок
       await ensureFontsAndImagesReady(el);
 
       // 3) сам захват
       const canvas = await html2canvas(el, {
-        scale: IS_IOS ? 1 : Math.min(window.devicePixelRatio || 1, 2),
+        scale: Math.min(window.devicePixelRatio || 1, 2),
         useCORS: true,
         allowTaint: false,
         backgroundColor: null,
@@ -1654,8 +1694,9 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
       // 4) blob + двойной fallback
       return await canvasToBlobSafe(canvas, "image/png", 0.9);
     } finally {
-      // 5) вернуть исходные background-image
-      inlined.restore?.();
+      // 5) вернуть исходные ресурсы
+      inlinedBg.restore?.();
+      inlinedImg.restore?.();
     }
   }
 
@@ -1745,7 +1786,6 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
               textSpan.textContent = loadText + ".".repeat(dots);
             }, 500);
 
-            const delay = IS_IOS ? 300 : 50;
             setTimeout(() => {
               makeScreenshotAndSend(function(fileUrl) {
                 clearInterval(intervalId);
@@ -1758,7 +1798,7 @@ const IS_IOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
                   submitButton.style.pointerEvents = "none";
                 }
               });
-            }, delay);
+            }, 100);
           }
         }
       });
